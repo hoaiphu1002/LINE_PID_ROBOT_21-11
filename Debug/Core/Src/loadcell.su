@@ -1,0 +1,5 @@
+../Core/Src/loadcell.c:20:6:LoadCell_Init	104	static
+../Core/Src/loadcell.c:53:6:LoadCell_TareAuto	16	static
+../Core/Src/loadcell.c:60:7:LoadCell_ReadGram	24	static
+../Core/Src/loadcell.c:79:7:LoadCell_ReadKg	16	static
+../Core/Src/loadcell.c:85:6:LoadCell_Print	88	static

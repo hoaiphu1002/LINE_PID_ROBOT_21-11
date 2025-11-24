@@ -1,6 +1,7 @@
+"./Core/Src/HX711.o"
 "./Core/Src/control_motor.o"
 "./Core/Src/hienthi.o"
-"./Core/Src/line_pid.o"
+"./Core/Src/loadcell.o"
 "./Core/Src/main.o"
 "./Core/Src/speed_pid.o"
 "./Core/Src/stm32f1xx_hal_msp.o"

@@ -1,0 +1,14 @@
+../Core/Src/HX711.c:10:20:HX711_Delay_us	2
+../Core/Src/HX711.c:25:6:HX711_DWT_Init	1
+../Core/Src/HX711.c:36:6:HX711_Init	1
+../Core/Src/HX711.c:53:6:HX711_SetGain	4
+../Core/Src/HX711.c:63:9:HX711_ReadRaw	10
+../Core/Src/HX711.c:109:9:HX711_ReadAverage	3
+../Core/Src/HX711.c:120:6:HX711_Tare	1
+../Core/Src/HX711.c:126:6:HX711_SetScale	2
+../Core/Src/HX711.c:132:7:HX711_GetScale	1
+../Core/Src/HX711.c:137:6:HX711_SetOffset	1
+../Core/Src/HX711.c:142:9:HX711_GetOffset	1
+../Core/Src/HX711.c:147:7:HX711_GetUnits	1
+../Core/Src/HX711.c:154:6:HX711_PowerDown	1
+../Core/Src/HX711.c:163:6:HX711_PowerUp	1

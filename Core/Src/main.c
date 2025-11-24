@@ -18,12 +18,12 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "stdio.h"
-#include "hienthi.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "hienthi.h"
+#include "loadcell.h"
+#include "stdio.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -54,7 +54,7 @@ UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
-
+LoadCell_HandleTypeDef loadcell;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -84,12 +84,12 @@ volatile int duty = 0;
 volatile uint32_t last = 0;
 volatile uint32_t encoder_cpl = 1320;       // 330 xung/vòng TRỤC RA (đã tính hộp số)
 volatile float sample_time = 0.1;          // 100 ms
-volatile uint16_t sensor_val[7];
+volatile uint16_t sensor_val[5];
 volatile uint8_t line[5];   // 1 = trắng, 0 = đen
 volatile uint16_t threshold = 2000; // tùy cảm biến, bạn test
 
 uint16_t cam_raw[5];  // ADC đọc trực tiếp
-uint16_t cam_min[5] = {177,158,161,162,152};
+uint16_t cam_min[5] = {96,84,111,106,130};
 uint16_t cam_max[5] = {4095,4095,4095,4095,4095};
 #define ENCODER_PPR   1320.0f   // Số xung/vòng TRỤC RA
 #define WHEEL_DIAMETER 0.065f   // m (65 mm) - thay theo xe của bạn
@@ -103,10 +103,14 @@ static int32_t enc_right_prev = 0;
 static float rpm_left = 0.0f;
 static float rpm_right = 0.0f;
 
+volatile int32_t total_left_count = 0;
+volatile int32_t total_right_count = 0;
+
+
 uint16_t cam_norm[5]; // 0 → 1000
-float Kp = 1.8;
+float Kp = 2.5;
 float Ki = 0;
-float Kd = 0.35;
+float Kd = 0.4;
 
 typedef struct {
     float Kp;
@@ -123,6 +127,9 @@ float integral = 0;
 float last_error = 0;
 volatile float left_speed = 0.0f;
 volatile float right_speed = 0.0f;
+
+float dt1=0.02f;
+float dt2=1.0f;
 
 void chieu_thuan_dongco_trai(){
 	HAL_GPIO_WritePin(GPIOB,GPIO_PIN_0,0);
@@ -152,6 +159,10 @@ void Motor_ReadSpeed(void)
     if (delta_left < -32768) delta_left += 65536;
     if (delta_right > 32767) delta_right -= 65536;
     if (delta_right < -32768) delta_right += 65536;
+
+
+    total_left_count  += delta_left;
+    total_right_count += delta_right;
 
     enc_left_prev  = enc_left_now;
     enc_right_prev = enc_right_now;
@@ -214,7 +225,6 @@ int16_t get_line_position()
     int32_t sum_val = 0;
     int32_t sum_weight = 0;
 
-    // vị trí: -300, -200, -100, 0, +100, +200, +300
     int16_t weight[5] = {-260,-130,0,130,260};
 
     for(int i=0;i<5;i++)
@@ -228,43 +238,129 @@ int16_t get_line_position()
 
     return sum_val / sum_weight;
 }
-void line_pid_control()
+
+void print_line_sensor_data()
+{
+    char buffer[300];
+
+    // In giá trị raw
+    print_uart("Raw: ");
+    for (int i = 0; i < 5; i++)
+    {
+        sprintf(buffer, "%4d ", cam_raw[i]);
+        print_uart(buffer);
+    }
+    print_uart("\r\n");
+
+    // In giá trị normalized
+    print_uart("Norm: ");
+    for (int i = 0; i < 5; i++)
+    {
+        sprintf(buffer, "%4d ", cam_norm[i]);
+        print_uart(buffer);
+    }
+    print_uart("\r\n");
+
+    // In độ lệch line
+    int16_t pos = get_line_position();
+    sprintf(buffer, "Position: %d\r\n", pos);
+    print_uart(buffer);
+
+    sprintf(buffer, "EncL: %ld  EncR: %ld\r\n",
+            (long)total_left_count,
+            (long)total_right_count);
+    print_uart(buffer);
+
+
+
+}
+
+//ĐỌC BLUETOOTH
+
+void line_pid_control(float dt2)
 {
     normalize_sensor();
 
     float error = get_line_position();  // -300 → +300
 
-    integral += error;
-    float derivative = error - last_error;
+    integral += error * dt2;   // <--- ĐÚNG
+    float derivative = (error - last_error) / dt2;  // <--- ĐÚNG
 
     float correction = Kp*error + Ki*integral + Kd*derivative;
 
     last_error = error;
 
-    // correction cần chuyển về m/s
-    // scale tùy bạn – thường 0.001f là hợp lý
+    // scale correction ra m/s
     float corr_ms = correction * 0.00032f;
 
-    // vận tốc mục tiêu m/s
-    float base_ms = 0.12f;   // ví dụ 0.35 m/s (~1.26 km/h)
+    float base_ms = 0.25f;
 
     left_speed  = base_ms - corr_ms;
     right_speed = base_ms + corr_ms;
 
-    // Giới hạn (m/s)
     if(left_speed  < 0) left_speed  = 0;
     if(right_speed < 0) right_speed = 0;
 
-    if(left_speed > 0.2f)  left_speed = 0.2f;
-    if(right_speed > 0.2f) right_speed = 0.2f;
+    if(left_speed > 0.25f)  left_speed = 0.25f;
+    if(right_speed > 0.25f) right_speed = 0.25f;
 }
 
-float PID_Speed(PID_t *pid, float set, float measure, float dt)
+uint8_t check_stop_simple(void)
+{
+    // Lấy 5 giá trị
+    int c0 = cam_norm[0];
+    int c1 = cam_norm[1];
+    int c2 = cam_norm[2];
+    int c3 = cam_norm[3];
+    int c4 = cam_norm[4];
+
+    int16_t pos = get_line_position();
+
+
+    // ====== 1) Tổng giá trị lớn → vật chắn lớn ======
+//    int total = c0 + c1 + c2 + c3 + c4;
+//    if(total > 1500) return 1;
+
+    // ====== 2) 3 cảm biến giữa sáng mạnh → vật chắn trước ======
+//    if ( ((c1 + c2 + c0 > 1200) && (c0 <= 15)) || ((c2 + c3 + c4 > 1200) && (c4 <= 15)) )
+//        return 1;
+
+//        if (c1 + c2 + c3+ c4>=3000)
+//            return 1;
+//    // ====== 3) Lệch phải như bạn đưa (1000, 677, 415, 0, 0) ======
+//    if(c0 > 800 && c1 > 500 && c2 > 300) return 1;
+//
+//    // ====== 4) Lệch trái như bạn đưa (301, 811, 817, 0, 2) ======
+//    if(c2 > 600 && c1 > 600 && c0 > 200) return 1;
+
+//    if (( c2 >=700 && c3 >= 700 && c4 >= 700 )&&(c1 + c2 + c0 > 1200)){
+//        return 1;
+//    }
+
+//    if ((total_left_count >=3600&&total_left_count<=3700)||(total_right_count>=3600&&total_right_count<=3700)){
+//    	return 1;
+//    }
+    if ((total_right_count >12450 &&total_right_count < 13000)&&(pos<65&&pos>-65)){
+    	return 1;
+    }
+    if ((total_right_count >25000 &&total_right_count < 26000)){
+    	return 1;
+    }
+
+    if (c0 < 30 && c1 < 30 && c2 < 30 && c3 <= 30 && c4 <= 30) {
+        return 1;
+    }
+
+    return 0;
+}
+
+
+float PID_Speed(PID_t *pid, float set, float measure, float dt1)
 {
     float error = set - measure;
 
-    pid->integral += error * dt;
-    float derivative = (error - pid->prev_error) / dt;
+    pid->integral += error * dt1;
+    float derivative = (error - pid->prev_error) / dt1;
 
     float output = pid->Kp*error + pid->Ki*pid->integral + pid->Kd*derivative;
 
@@ -276,7 +372,6 @@ float PID_Speed(PID_t *pid, float set, float measure, float dt)
 
     return output;
 }
-
 /* USER CODE END 0 */
 
 /**
@@ -322,13 +417,21 @@ int main(void)
 
   HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
   HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL);
-
+  HAL_Delay(5000);  // Cho thời gian mở Serial Monitor
   // BẮT ĐẦU ĐỌC ADC BẰNG DMA
   HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_dma_val, 5);
+  // Khởi tạo cân
+  LoadCell_Init(&loadcell,
+                GPIOB, GPIO_PIN_8,   // DOUT
+                GPIOB, GPIO_PIN_9,   // SCK
+                1.0f, -0.0);
 
   	chieu_thuan_dongco_trai();
   	chieu_thuan_dongco_phai();
-  	uint32_t last_tick = 0;
+  	uint32_t last_pid = 0;
+  	uint32_t last_line = 0;
+  	uint32_t last_speed = 0;
+  	uint32_t last_cell = 0;
 
   /* USER CODE END 2 */
 
@@ -339,33 +442,43 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  uint32_t now = HAL_GetTick(); // đơn vị ms
+	  uint32_t now = HAL_GetTick();
 
-	      if(now - last_tick >= 100)  // đủ 100 ms
-	      {
-	          last_tick = now;
+	      // 1) Cập nhật encoder mỗi 100ms
+	      if(now - last_speed >= 100) {
+	          last_speed = now;
+	          Motor_ReadSpeed();
+	      }
 
-	          // 1️⃣ Cập nhật tốc độ từ encoder
-	          Motor_ReadSpeed();  // speed_left_ms, speed_right_ms
+	      // 2) Đọc line sensor mỗi 100ms
+	      if(now - last_line >= 100) {
+	          last_line = now;
+	          normalize_sensor();
+	          read_line_sensor();
+	          print_line_sensor_data();
+	      }
 
-	          // 2️⃣ Line PID → mục tiêu vận tốc m/s
-	          line_pid_control(); // left_speed, right_speed (m/s)
+          if(check_stop_simple()) {
+                     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+                     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 0);
+                     continue;
+          }
+	      // 3) PID mỗi 20ms
+	      if(now - last_pid >= 100) {
+	          last_pid = now;
 
-	          // 3️⃣ Speed PID → PWM
-	          float pwmL = PID_Speed(&pid_left,  left_speed,  speed_left_ms,  sample_time);
-	          float pwmR = PID_Speed(&pid_right, right_speed, speed_right_ms, sample_time);
+	          line_pid_control(dt2);
 
-	          // 4️⃣ Set PWM cho động cơ
+	          float pwmL = PID_Speed(&pid_left,  left_speed,  speed_left_ms,  dt1);
+	          float pwmR = PID_Speed(&pid_right, right_speed, speed_right_ms, dt1);
+
 	          __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwmL);
 	          __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, pwmR);
-	          char buf[100];
-	                  snprintf(buf, sizeof(buf),
-	                           "L_set=%.2f R_set=%.2f L_ms=%.2f R_ms=%.2f pwmL=%.0f pwmR=%.0f\r\n",
-	                           left_speed, right_speed,
-	                           speed_left_ms, speed_right_ms,
-	                           pwmL, pwmR);
-	                  print_uart(buf);
 	      }
+//	  LoadCell_Print(&loadcell); // tự đọc và gửi dữ liệu
+//	     HAL_Delay(1000);
+
+
   }
   /* USER CODE END 3 */
 }
@@ -462,6 +575,7 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_1;
   sConfig.Rank = ADC_REGULAR_RANK_2;
+  sConfig.SamplingTime = ADC_SAMPLETIME_71CYCLES_5;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -489,6 +603,7 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_4;
   sConfig.Rank = ADC_REGULAR_RANK_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_239CYCLES_5;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -760,7 +875,7 @@ static void MX_USART3_UART_Init(void)
 
   /* USER CODE END USART3_Init 1 */
   huart3.Instance = USART3;
-  huart3.Init.BaudRate = 115200;
+  huart3.Init.BaudRate = 9600;
   huart3.Init.WordLength = UART_WORDLENGTH_8B;
   huart3.Init.StopBits = UART_STOPBITS_1;
   huart3.Init.Parity = UART_PARITY_NONE;
@@ -833,7 +948,7 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin : PB8 */
   GPIO_InitStruct.Pin = GPIO_PIN_8;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */

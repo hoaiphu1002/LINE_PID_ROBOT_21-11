@@ -1,0 +1,5 @@
+../Core/Src/loadcell.c:20:6:LoadCell_Init	2
+../Core/Src/loadcell.c:53:6:LoadCell_TareAuto	1
+../Core/Src/loadcell.c:60:7:LoadCell_ReadGram	5
+../Core/Src/loadcell.c:79:7:LoadCell_ReadKg	1
+../Core/Src/loadcell.c:85:6:LoadCell_Print	1
