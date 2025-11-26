@@ -89,7 +89,7 @@ volatile uint8_t line[5];   // 1 = trắng, 0 = đen
 volatile uint16_t threshold = 2000; // tùy cảm biến, bạn test
 
 uint16_t cam_raw[5];  // ADC đọc trực tiếp
-uint16_t cam_min[5] = {96,84,111,106,130};
+uint16_t cam_min[5] = {229,227,233,246,294};
 uint16_t cam_max[5] = {4095,4095,4095,4095,4095};
 #define ENCODER_PPR   1320.0f   // Số xung/vòng TRỤC RA
 #define WHEEL_DIAMETER 0.065f   // m (65 mm) - thay theo xe của bạn
@@ -108,9 +108,9 @@ volatile int32_t total_right_count = 0;
 
 
 uint16_t cam_norm[5]; // 0 → 1000
-float Kp = 2.5;
+float Kp = 1.8;
 float Ki = 0;
-float Kd = 0.4;
+float Kd = 0.35;
 
 typedef struct {
     float Kp;
@@ -130,6 +130,20 @@ volatile float right_speed = 0.0f;
 
 float dt1=0.02f;
 float dt2=1.0f;
+
+typedef enum {
+    KHONGCOHANG = 0,
+    HANG_1KG,
+    HANG_2KG
+} Phanloaihang;
+
+volatile Phanloaihang hang_hien_tai = KHONGCOHANG;
+volatile uint8_t dang_o_diem_nhan_hang = 0;
+volatile uint8_t dang_o_diem_re = 0;
+volatile uint8_t dang_re = 0;
+volatile uint32_t thoi_gian_bat_dau_re = 0;
+
+
 
 void chieu_thuan_dongco_trai(){
 	HAL_GPIO_WritePin(GPIOB,GPIO_PIN_0,0);
@@ -293,7 +307,7 @@ void line_pid_control(float dt2)
     // scale correction ra m/s
     float corr_ms = correction * 0.00032f;
 
-    float base_ms = 0.25f;
+    float base_ms = 0.2f;
 
     left_speed  = base_ms - corr_ms;
     right_speed = base_ms + corr_ms;
@@ -301,59 +315,9 @@ void line_pid_control(float dt2)
     if(left_speed  < 0) left_speed  = 0;
     if(right_speed < 0) right_speed = 0;
 
-    if(left_speed > 0.25f)  left_speed = 0.25f;
-    if(right_speed > 0.25f) right_speed = 0.25f;
+    if(left_speed > 0.35f)  left_speed = 0.35f;
+    if(right_speed > 0.35f) right_speed = 0.35f;
 }
-
-uint8_t check_stop_simple(void)
-{
-    // Lấy 5 giá trị
-    int c0 = cam_norm[0];
-    int c1 = cam_norm[1];
-    int c2 = cam_norm[2];
-    int c3 = cam_norm[3];
-    int c4 = cam_norm[4];
-
-    int16_t pos = get_line_position();
-
-
-    // ====== 1) Tổng giá trị lớn → vật chắn lớn ======
-//    int total = c0 + c1 + c2 + c3 + c4;
-//    if(total > 1500) return 1;
-
-    // ====== 2) 3 cảm biến giữa sáng mạnh → vật chắn trước ======
-//    if ( ((c1 + c2 + c0 > 1200) && (c0 <= 15)) || ((c2 + c3 + c4 > 1200) && (c4 <= 15)) )
-//        return 1;
-
-//        if (c1 + c2 + c3+ c4>=3000)
-//            return 1;
-//    // ====== 3) Lệch phải như bạn đưa (1000, 677, 415, 0, 0) ======
-//    if(c0 > 800 && c1 > 500 && c2 > 300) return 1;
-//
-//    // ====== 4) Lệch trái như bạn đưa (301, 811, 817, 0, 2) ======
-//    if(c2 > 600 && c1 > 600 && c0 > 200) return 1;
-
-//    if (( c2 >=700 && c3 >= 700 && c4 >= 700 )&&(c1 + c2 + c0 > 1200)){
-//        return 1;
-//    }
-
-//    if ((total_left_count >=3600&&total_left_count<=3700)||(total_right_count>=3600&&total_right_count<=3700)){
-//    	return 1;
-//    }
-    if ((total_right_count >12450 &&total_right_count < 13000)&&(pos<65&&pos>-65)){
-    	return 1;
-    }
-    if ((total_right_count >25000 &&total_right_count < 26000)){
-    	return 1;
-    }
-
-    if (c0 < 30 && c1 < 30 && c2 < 30 && c3 <= 30 && c4 <= 30) {
-        return 1;
-    }
-
-    return 0;
-}
-
 
 float PID_Speed(PID_t *pid, float set, float measure, float dt1)
 {
@@ -372,6 +336,140 @@ float PID_Speed(PID_t *pid, float set, float measure, float dt1)
 
     return output;
 }
+
+
+Phanloaihang kiem_tra_loai_hang(void)
+{
+    float khoi_luong = LoadCell_ReadGram(&loadcell, 5);
+
+    if (khoi_luong >= 800.0f && khoi_luong <= 1200.0f) {
+        return HANG_1KG;
+    } else if (khoi_luong >= 1800.0f && khoi_luong <= 2200.0f) {
+        return HANG_2KG;
+    }
+
+    return KHONGCOHANG;
+}
+
+void xu_ly_diem_nhan_hang(void)
+{
+    // Dừng động cơ
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 0);
+
+    // Chờ cho đến khi có hàng 1kg hoặc 2kg
+    while (1) {
+        hang_hien_tai = kiem_tra_loai_hang();
+        if (hang_hien_tai == HANG_1KG || hang_hien_tai == HANG_2KG) {
+            break;
+        }
+        HAL_Delay(100);
+    }
+
+    dang_o_diem_nhan_hang = 0;
+
+    // Reset PID để bắt đầu bám line lại
+    integral = 0;
+    last_error = 0;
+
+    left_speed=0.15;
+    right_speed=0.15;
+    float pwm_trai = PID_Speed(&pid_left, left_speed, speed_left_ms, dt1);
+    float pwm_phai = PID_Speed(&pid_right, right_speed, speed_right_ms, dt1);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm_trai);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, pwm_phai);
+
+    // Xe sẽ tự động chạy tiếp nhờ PID trong vòng lặp chính
+}
+
+void re_trai(void)
+{
+    // Rẽ trái: bánh phải chạy nhanh hơn
+//    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 50);
+//    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 300);
+    left_speed = 0.1;
+    right_speed=0.15;
+    // Cập nhật PWM ngay lập tức
+    float pwm_trai = PID_Speed(&pid_left, left_speed, speed_left_ms, dt1);
+    float pwm_phai = PID_Speed(&pid_right, right_speed, speed_right_ms, dt1);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm_trai);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, pwm_phai);
+
+}
+
+void re_phai(void)
+{
+    // Rẽ phải: bánh trái chạy nhanh hơn
+//    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 300);
+//    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 50);
+    left_speed = 0.25;
+    right_speed=0.1;
+    // Cập nhật PWM ngay lập tức
+    float pwm_trai = PID_Speed(&pid_left, left_speed, speed_left_ms, dt1);
+    float pwm_phai = PID_Speed(&pid_right, right_speed, speed_right_ms, dt1);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm_trai);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, pwm_phai);
+}
+void xu_ly_diem_re(void)
+{
+    char buffer[100];
+
+    if (hang_hien_tai == HANG_1KG) {
+        sprintf(buffer, "RE TRAI - Hang 1kg\r\n");
+        print_uart(buffer);
+        re_trai();
+    } else if (hang_hien_tai == HANG_2KG) {
+        sprintf(buffer, "RE PHAI - Hang 2kg\r\n");
+        print_uart(buffer);
+        re_phai();
+    } else {
+        sprintf(buffer, "KHONG CO HANG - Khong re\r\n");
+        print_uart(buffer);
+        return;  // Không làm gì nếu không có hàng
+    }
+
+    dang_re = 1;
+    thoi_gian_bat_dau_re = HAL_GetTick();
+    dang_o_diem_re = 0;
+}
+
+void ket_thuc_re(void)
+{
+    dang_re = 0;
+    // Reset PID để bám line lại từ đầu
+    integral = 0;
+    last_error = 0;
+}
+
+uint8_t check_stop_simple(void)
+{
+    int16_t vi_tri_line = get_line_position();
+
+    // Điểm nhận hàng
+    if ((total_right_count > 12450 && total_right_count < 13000) &&
+        (vi_tri_line < 65 && vi_tri_line > -65)&&(hang_hien_tai == KHONGCOHANG)) {
+        dang_o_diem_nhan_hang = 1;
+        return 1;
+    }
+
+    // Điểm rẽ
+    if ((total_right_count > 25000 && total_right_count < 26000)&&(hang_hien_tai != KHONGCOHANG)) {
+        dang_o_diem_re = 1;
+        return 1;
+    }
+
+    // Dừng khẩn cấp khi mất line
+    if (cam_norm[0] < 50 && cam_norm[1] < 50 && cam_norm[2] < 50 &&
+        cam_norm[3] < 50 && cam_norm[4] < 50) {
+        return 1;
+    }
+
+    return 0;
+}
+
+
+
+
 /* USER CODE END 0 */
 
 /**
@@ -417,14 +515,14 @@ int main(void)
 
   HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
   HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL);
-  HAL_Delay(5000);  // Cho thời gian mở Serial Monitor
+//  HAL_Delay(5000);  // Cho thời gian mở Serial Monitor
   // BẮT ĐẦU ĐỌC ADC BẰNG DMA
   HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_dma_val, 5);
   // Khởi tạo cân
   LoadCell_Init(&loadcell,
                 GPIOB, GPIO_PIN_8,   // DOUT
                 GPIOB, GPIO_PIN_9,   // SCK
-                1.0f, -0.0);
+                415.713012f, -321367);
 
   	chieu_thuan_dongco_trai();
   	chieu_thuan_dongco_phai();
@@ -432,6 +530,7 @@ int main(void)
   	uint32_t last_line = 0;
   	uint32_t last_speed = 0;
   	uint32_t last_cell = 0;
+
 
   /* USER CODE END 2 */
 
@@ -442,42 +541,56 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  uint32_t now = HAL_GetTick();
+	  uint32_t thoi_gian_hien_tai = HAL_GetTick();
 
-	      // 1) Cập nhật encoder mỗi 100ms
-	      if(now - last_speed >= 100) {
-	          last_speed = now;
-	          Motor_ReadSpeed();
-	      }
+	     // Cập nhật encoder và tốc độ
+	     if(thoi_gian_hien_tai - last_speed >= 100) {
+	         last_speed = thoi_gian_hien_tai;
+	         Motor_ReadSpeed();
+	     }
 
-	      // 2) Đọc line sensor mỗi 100ms
-	      if(now - last_line >= 100) {
-	          last_line = now;
-	          normalize_sensor();
+	     // Đọc cảm biến line
+	     if(thoi_gian_hien_tai - last_line >= 100) {
+	         last_line = thoi_gian_hien_tai;
+	         normalize_sensor();
 	          read_line_sensor();
 	          print_line_sensor_data();
-	      }
+	     }
 
-          if(check_stop_simple()) {
-                     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
-                     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 0);
-                     continue;
-          }
-	      // 3) PID mỗi 20ms
-	      if(now - last_pid >= 100) {
-	          last_pid = now;
+	     // Kiểm tra điểm dừng
+	     if(check_stop_simple()) {
+	         if (dang_o_diem_nhan_hang) {
+	             xu_ly_diem_nhan_hang();
+	             continue;
+	         }
+	         else if (dang_o_diem_re) {
+	             xu_ly_diem_re();
+	             continue;
+	         }
+	         else {
+                 __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+                 __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 0);
+                 continue;
+	         }
+	     }
 
-	          line_pid_control(dt2);
+	     // Kết thúc lượt rẽ sau 0.5 giây
+	     if (dang_re && (thoi_gian_hien_tai - thoi_gian_bat_dau_re >= 400)) {
+	         ket_thuc_re();
+	     }
 
-	          float pwmL = PID_Speed(&pid_left,  left_speed,  speed_left_ms,  dt1);
-	          float pwmR = PID_Speed(&pid_right, right_speed, speed_right_ms, dt1);
+	     // Điều khiển PID bám line (chỉ khi không đang rẽ)
+	     if(!dang_o_diem_nhan_hang && !dang_re && thoi_gian_hien_tai - last_pid >= 100) {
+	         last_pid = thoi_gian_hien_tai;
 
-	          __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwmL);
-	          __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, pwmR);
-	      }
-//	  LoadCell_Print(&loadcell); // tự đọc và gửi dữ liệu
-//	     HAL_Delay(1000);
+	         line_pid_control(dt2);
 
+	         float pwm_trai = PID_Speed(&pid_left, left_speed, speed_left_ms, dt1);
+	         float pwm_phai = PID_Speed(&pid_right, right_speed, speed_right_ms, dt1);
+
+	         __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm_trai);
+	         __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, pwm_phai);
+	     }
 
   }
   /* USER CODE END 3 */

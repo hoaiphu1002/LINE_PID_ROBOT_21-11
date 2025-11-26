@@ -12,7 +12,7 @@
 
 /* --- CẤU HÌNH MẶC ĐỊNH --- */
 #define NOISE_THRESHOLD_DEFAULT  0.2f
-#define TOLERANCE_DEFAULT        20.0f
+#define TOLERANCE_DEFAULT        6.0f
 #define W1_DEFAULT               1000.0f
 #define W2_DEFAULT               2000.0f
 
@@ -61,15 +61,20 @@ float LoadCell_ReadGram(LoadCell_HandleTypeDef *lc, uint8_t samples)
 {
     float weight = HX711_GetUnits(&lc->hx711, samples);
 
-    if (fabsf(weight) < lc->noise_threshold)
+    // Lọc nhiễu: 0-10g → 0g
+    if (weight >= 0 && weight <= 10.0f)
         weight = 0;
 
+    // Âm → 0g
     if (weight < 0)
         weight = 0;
 
-    if (fabsf(weight - lc->W1) <= lc->tolerance)
+    // Khoảng W1 ± tolerance → W1
+    if (weight >= (lc->W1 - lc->tolerance) && weight <= (lc->W1 + lc->tolerance))
         weight = lc->W1;
-    else if (fabsf(weight - lc->W2) <= lc->tolerance)
+
+    // Khoảng W2 ± tolerance → W2
+    else if (weight >= (lc->W2 - lc->tolerance) && weight <= (lc->W2 + lc->tolerance))
         weight = lc->W2;
 
     return weight;
@@ -84,7 +89,7 @@ float LoadCell_ReadKg(LoadCell_HandleTypeDef *lc, uint8_t samples)
 /* --- HÀM TỔNG HỢP: ĐỌC + IN RA UART --- */
 void LoadCell_Print(LoadCell_HandleTypeDef *lc)
 {
-    float weight = LoadCell_ReadGram(lc, 10);
+    float weight = LoadCell_ReadGram(lc, 2);
 
     char msg[64];
     sprintf(msg, "Trọng lượng: %.2f g\r\n", weight);
